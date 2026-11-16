@@ -12,6 +12,13 @@ on:
 jobs:
   npm:
     name: Publish orca-dag to npm
+    # A fork cannot publish: the `orca-dag` name belongs to the upstream owner,
+    # so `npm publish` fails with E403/ENEEDAUTH and the tag (the version of
+    # record) would look broken even though nothing is wrong with the code.
+    # Forks still want the tag → binaries job below, which only needs
+    # GITHUB_TOKEN. Drop this guard in a fork that publishes its own package
+    # name, together with the rename in package.json and the docs.
+    if: ${{ github.event.repository.fork == false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
