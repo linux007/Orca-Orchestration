@@ -81,6 +81,21 @@ export async function resolveGate(id: string, resolution: string, runId: string)
 }
 
 /**
+ * Answer a worker's `question` (`via: "reply"`, the default) or steer an
+ * `escalation` (`via: "send"`, needs the sender's dispatchId). Both wake a
+ * worker, so the server runs them as the bound coordinator.
+ */
+export async function answerMail(
+  id: string,
+  body: string,
+  runId: string,
+  via: "reply" | "send" = "reply",
+  dispatchId?: string | null,
+): Promise<void> {
+  await post(`/api/mail/${encodeURIComponent(id)}/answer`, { body, runId, via, dispatchId });
+}
+
+/**
  * Clear tasks. `orca orchestration reset` has no `--run` scope: it wipes every
  * Run's tasks in the local orchestration database, so the caller must opt in.
  */

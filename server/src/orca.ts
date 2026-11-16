@@ -389,6 +389,129 @@ export async function taskUpdate(
   await runOrca(args);
 }
 
+// --- Mail (worker reports, questions, escalations) -------------------------
+
+/**
+ * One row from a Run's inbox.
+ *
+ * The viewer used to ignore this channel entirely: `worker_done` settled its
+ * task through Orca, so it never needed reading, but `question` and
+ * `escalation` were left unread forever. That was the one failure mode the
+ * browser coordinator could not recover from — a worker that asks ends its
+ * turn and waits for an answer, nobody is there to give one, and the node sits
+ * at `dispatched` until the loop gives up. Reading the Run's inbox (a
+ * read-only call, no coordinator terminal required) lets the UI surface those
+ * rows and answer them.
+ */
+export interface RunMail {
+  id: string;
+  /** `worker_done` | `question` | `escalation` | `status` | … */
+  type: string;
+  subject: string | null;
+  body: string | null;
+  fromHandle: string | null;
+  /** Sender's Dispatch — the address for `send` when steering an escalation. */
+  dispatchId: string | null;
+  /** Orca marks a row handled once someone receives it; the UI hides those. */
+  handled: boolean;
+}
+
+function parsePayload(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") {
+    return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * A Run's mail. `inbox --terminal run:<id>` is the Run-scoped read — the
+ * unscoped form spans every recipient on the host. Deliberately NOT `check`:
+ * that marks the batch handled, which would steal mail from whoever else wants
+ * it (the bound coordinator, or the user's own agent after a handoff — the
+ * skill warns about exactly this).
+ */
+export async function listMail(runId: string): Promise<RunMail[]> {
+  const result = await runOrca<{ messages?: Record<string, unknown>[] }>([
+    "orchestration",
+    "inbox",
+    "--terminal",
+    `run:${runId}`,
+    "--full",
+    "--limit",
+    "50",
+  ]);
+  return (result.messages ?? [])
+    .map((m) => {
+      const dispatchId = parsePayload(m.payload).dispatchId;
+      return {
+        id: String(m.id ?? ""),
+        type: String(m.type ?? "status"),
+        subject: m.subject ? String(m.subject) : null,
+        body: m.body ? String(m.body) : null,
+        fromHandle: m.from_handle ? String(m.from_handle) : null,
+        dispatchId: typeof dispatchId === "string" ? dispatchId : null,
+        handled: m.handled === true,
+      };
+    })
+    .filter((m) => m.id);
+}
+
+/**
+ * Answer a worker's `question`. Mutating — it wakes the worker that is waiting
+ * on its turn to end — so it runs as the bound coordinator.
+ */
+export async function replyMail(
+  messageId: string,
+  body: string,
+  runId: string,
+  from: string,
+): Promise<void> {
+  await runOrca([
+    "orchestration",
+    "reply",
+    "--id",
+    messageId,
+    "--body",
+    body,
+    "--run",
+    runId,
+    "--from",
+    from,
+  ]);
+}
+
+/**
+ * Steer a worker that stopped without reporting (`escalation`). `send` reaches
+ * a running worker at its next turn end and reopens a closed one; the address
+ * is its Dispatch, which the message payload carries.
+ */
+export async function nudgeDispatch(
+  dispatchId: string,
+  body: string,
+  runId: string,
+  from: string,
+): Promise<void> {
+  await runOrca([
+    "orchestration",
+    "send",
+    "--to",
+    `dispatch:${dispatchId}`,
+    "--subject",
+    "coordinator",
+    "--body",
+    body,
+    "--run",
+    runId,
+    "--from",
+    from,
+  ]);
+}
+
 // --- Terminals -------------------------------------------------------------
 
 /** A live Orca-managed terminal. */

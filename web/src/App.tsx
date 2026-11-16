@@ -2,13 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DagView } from "./components/DagView";
 import { ExecControls } from "./components/ExecControls";
 import { GatePanel } from "./components/GatePanel";
+import { MailPanel } from "./components/MailPanel";
 import { NodePanel } from "./components/NodePanel";
 import { RunPicker } from "./components/RunPicker";
 import { fetchDag, resetTasks } from "./api";
 import { initConfig, setLayout, setRunId, useConfig } from "./harness";
-import { LAYOUTS, STATUS_META, type DagResponse, type LayoutKind, type TaskStatus } from "./types";
+import { notify } from "./notify";
+import {
+  LAYOUTS,
+  STATUS_META,
+  isPendingGate,
+  type DagResponse,
+  type LayoutKind,
+  type TaskStatus,
+} from "./types";
 
-const EMPTY: DagResponse = { runId: "", nodes: [], edges: [], gates: [], generatedAt: 0 };
+const EMPTY: DagResponse = { runId: "", nodes: [], edges: [], gates: [], mail: [], generatedAt: 0 };
 const POLL_MS = 2000;
 
 /**
@@ -192,6 +201,41 @@ export default function App() {
     };
   }, [refresh]);
 
+  // --- desktop notifications -------------------------------------------
+  // The tab is usually in the background while workers run; a settled node or a
+  // gate going pending otherwise changes nothing but pixels. Compare against the
+  // previous poll so each transition fires once. The first poll (and the first
+  // poll after switching Runs) only seeds the baseline — opening the viewer must
+  // not replay the Run's history.
+  const prevRef = useRef<{
+    runId: string;
+    statuses: Map<string, TaskStatus>;
+    gates: Set<string>;
+    primed: boolean;
+  }>({ runId: "", statuses: new Map(), gates: new Set(), primed: false });
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    const statuses = new Map(dag.nodes.map((n) => [n.id, n.status]));
+    const pendingGates = new Set(dag.gates.filter(isPendingGate).map((g) => g.id));
+    if (!prev.primed || prev.runId !== dag.runId) {
+      prevRef.current = { runId: dag.runId, statuses, gates: pendingGates, primed: true };
+      return;
+    }
+    for (const n of dag.nodes) {
+      const before = prev.statuses.get(n.id);
+      if (before === n.status) continue;
+      if (n.status === "completed") notify("✅ Task done", n.label, `task:${n.id}`);
+      else if (n.status === "failed") notify("❌ Task failed", n.label, `task:${n.id}`);
+    }
+    for (const g of dag.gates) {
+      if (isPendingGate(g) && !prev.gates.has(g.id)) {
+        notify("🔒 Approval needed", g.question || "Resolve the decision gate", `gate:${g.id}`);
+      }
+    }
+    prevRef.current = { runId: dag.runId, statuses, gates: pendingGates, primed: true };
+  }, [dag]);
+
   // switching Run invalidates the current selection
   const pickRun = useCallback((id: string) => {
     setRunId(id);
@@ -365,6 +409,9 @@ export default function App() {
             )}
 
             <GatePanel gates={dag.gates} runId={runId} onResolved={refresh} />
+
+            {/* questions / escalations the coordinator loop cannot answer */}
+            <MailPanel mail={dag.mail} runId={runId} onAnswered={refresh} />
 
             {/* keyed by node so switching selection replays the card's entrance */}
             {selected && (

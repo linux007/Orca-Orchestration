@@ -1200,6 +1200,101 @@ body {
   border-color: #c23b2e;
 }
 
+/* the one thing a gate card must say out loud: approved is the only release */
+.gate__hint {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin: -4px 0 10px;
+  line-height: 1.45;
+}
+
+/* ---------- worker mail (a note pinned to the other corner) ----------
+   Questions and escalations are separate from gates on purpose: a gate is a
+   step the plan waits on, while mail is a worker that stopped mid-node. The
+   bottom corner keeps them from covering the gates at the top. */
+.mails {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 11px;
+  z-index: 6;
+  pointer-events: none;
+}
+.mail {
+  pointer-events: auto;
+  position: relative;
+  width: fit-content;
+  min-width: 340px;
+  max-width: 520px;
+  background: #fdf8ec;
+  border: 2px solid var(--butter);
+  border-radius: 14px 16px 13px 16px;
+  padding: 13px 15px 13px;
+  box-shadow: var(--shadow-sticker);
+  transform: rotate(0.4deg);
+}
+/* an escalation is a dead end, not a question — wear the coral border */
+.mail--stuck {
+  background: #fdf0ee;
+  border-color: var(--coral);
+}
+.mail__badge {
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: #b37f16;
+  letter-spacing: 0.4px;
+  margin-bottom: 6px;
+}
+.mail--stuck .mail__badge {
+  color: #c23b2e;
+}
+.mail__subject {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.mail__body {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow: auto;
+  margin: 0 0 9px;
+}
+.mail__input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  background: #fffdf8;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 9px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+.mail__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+.mail__from {
+  font-size: 11px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- node action panel (a taped index card) ---------- */
 .node-panel {
   position: absolute;

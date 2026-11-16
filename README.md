@@ -143,9 +143,9 @@ An end-to-end pass, starting from nothing installed:
 
 5. **Choose harnesses.** Set the toolbar's **Default harness** (fallback for every node), and optionally click individual nodes to override harness/model per node. Set **Max parallel**.
 
-6. **Click "▶ Run with Orca"** and accept the confirmation (it explains that the viewer takes over the Run's coordinator slot, fencing your agent's terminal — that's expected). Ready tasks fire in parallel; running nodes get the crayon scribble; the graph advances as workers report `worker_done`.
+6. **Click "▶ Run with Orca"** and accept the confirmation (it explains that the viewer takes over the Run's coordinator slot, fencing your agent's terminal — that's expected). Allow notifications if the browser asks: settled tasks and pending gates then reach you while the tab is in the background. Ready tasks fire in parallel; running nodes get the crayon scribble; the graph advances as workers report `worker_done`.
 
-7. **Resolve gates when they pop.** If the plan includes approval gates, approve/reject buttons float over the DAG at the right moment.
+7. **Resolve gates and worker mail when they pop.** Approval gates float over the DAG; only `approved` releases the task they block. Questions a worker asks (via `orca orchestration ask`) and workers that stop without reporting appear in the bottom corner with a reply box — a worker stuck on its *own* interactive prompt instead has to be answered in its terminal.
 
 8. **Change the plan?** Go back to the agent conversation. It reclaims the Run with `orca orchestration run-use --id <run>` (or just opens a fresh Run and redraws), and the viewer follows along. Then hit Run again.
 
@@ -158,7 +158,9 @@ An end-to-end pass, starting from nothing installed:
 - **Per-node harness**: click a node and pick `claude / kimi / opencode / grok / codex` or a custom command in its panel (persisted to the workspace's `.orca-dag.config.json`); nodes without an explicit choice fall back to the toolbar's **default harness**.
 - **Per-node model override**: for harnesses that support it — opencode gets a dropdown enumerated from `opencode models`; claude / codex / cursor get free-text (passed via `worker-start --model`). Others run on their default model.
 - **▶ Run with Orca / ⏹ Stop** + **Max parallel**: start/stop the viewer's built-in self-driven coordinator; worker count follows the DAG's parallelism (whatever is ready runs together, capped by "Max parallel"), spun up on demand, reused while idle, reclaimed when done — **no manual worker management**. While running it shows "N workers".
-- **Approval gates**: after the agent runs `gate-create`, approve/reject buttons float over the DAG.
+- **Approval gates**: after the agent runs `gate-create`, approve/reject buttons float over the DAG. Only the literal resolution `approved` releases the gated task — any other value leaves the Run stopped, so the card says so.
+- **Worker mail**: questions a worker asks via `orca orchestration ask`, and workers that stop without reporting, surface in the corner with a reply box — the coordinator loop cannot answer them on its own. A worker blocked on its *own* interactive prompt emits nothing; answer that in its terminal.
+- **Desktop notifications**: a task settling or a gate going pending raises a browser notification (permission is asked on the first Run click).
 - **Node details (read-only spec)**: click a node to see its spec / status / result. To change the spec or deps, have the agent redraw the DAG.
 - **Hand-drawn crayon style**: 🖍️ SVG feTurbulence wobbled strokes on a cream sketchbook canvas.
 
@@ -166,7 +168,7 @@ An end-to-end pass, starting from nothing installed:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/dag?run=<id>` | The Run's DAG: `{ runId, nodes, edges, gates, generatedAt }` |
+| `GET` | `/api/dag?run=<id>` | The Run's DAG: `{ runId, nodes, edges, gates, mail, generatedAt }` |
 | `GET` | `/api/runs` | List orchestration Runs |
 | `POST` | `/api/runs` | `{ objective }`: create a Run (via a throwaway coordinator terminal) |
 | `GET` | `/api/terminals` | List Orca terminals |
@@ -174,6 +176,7 @@ An end-to-end pass, starting from nothing installed:
 | `POST` | `/api/run-stop` | Stop the coordinator and reclaim its workers |
 | `GET` | `/api/run-status` | Live coordinator status: `{ running, busy, attempts, error, … }` |
 | `POST` | `/api/gates/:id/resolve` | `{ resolution, runId }`: resolve an approval gate |
+| `POST` | `/api/mail/:id/answer` | `{ body, runId, via?: "reply" \| "send", dispatchId? }`: answer a worker's question (`reply`) or steer a stopped worker (`send`) |
 | `POST` | `/api/reset` | `{ confirmAllRuns: true }`: `orca orchestration reset --tasks` — clears tasks in **all** Runs |
 | `GET` | `/api/models/:harness` | Models selectable for a harness (currently only opencode enumerates) |
 | `GET` | `/api/config` | Viewer config (harness/model choices, max parallel, layout, last Run), stored in the workspace's `.orca-dag.config.json` |
@@ -198,10 +201,12 @@ web/src/
   components/ExecControls.tsx default harness + max parallel + Run/Stop + live status
   components/NodePanel.tsx    node details + per-node harness & model pickers
   components/GatePanel.tsx    approval-gate overlay
+  components/MailPanel.tsx    worker questions / escalations the loop cannot answer
   components/RunPicker.tsx    Run selector + "New Run"
   components/DoodleSelect.tsx hand-drawn select (portal dropdown, search, keyboard nav)
   harness.ts                reactive config store: per-node harness/model, default, max parallel, layout (persisted via /api/config)
   layout.ts                 layout algorithms: dagre layered (LR/TB) + force-directed (Fruchterman–Reingold)
+  notify.ts                 desktop notifications for settled tasks and pending gates
   types.ts / api.ts
 scripts/
   build-binary.mjs        vite build → embed assets + skill → bun --compile → dist/orca-dag
@@ -210,6 +215,16 @@ scripts/
   check-skill.mjs         guards SKILL.md's frontmatter, which the skills CLI installs by
   release.mjs             `npm run release <version>`: checks, tags, pushes — CI does the rest
 ```
+
+## Human checkpoints, worker mail, and notifications
+
+A viewer-driven Run has exactly one coordinator, and it is a browser — so anything that needs a human has to be surfaced **by the viewer**, not by a chat session.
+
+- **Gates only release on `approved`.** `gate-create` blocks its task; the dispatch loop unblocks it only for the literal resolution `approved` (`coordinator.ts`). Any other value leaves the task `blocked`, and a Run with nothing else runnable stops — `rejected` means "stop here", not "retry". Put the pass criteria in the gate's question: the card on the canvas is all the context the person clicking it has.
+- **Worker mail is read and answerable.** The loop watches task status only, so a worker that calls `orca orchestration ask` waits for an answer nobody reads, and a worker that ends its turn without `worker_done` (an `escalation`) simply looks stuck. The viewer reads the Run's inbox (`inbox --terminal run:<id>`, read-only — never `check`, which consumes the batch and hides it from everyone else) and floats both in the bottom corner: `reply` answers a question, `send` steers a stopped worker through its dispatch.
+- **Native interactive prompts are invisible to Orca.** `AskUserQuestion`, a shell prompt, an editor inside a worker's terminal blocks that worker and emits no message at all — no viewer change can see it. The fix belongs in the spec: tell workers not to use interactive prompts and to `orca orchestration ask` or take a pre-agreed branch instead. The skill carries both rules.
+- **Desktop notifications** cover what the UI cannot: a settled task or a pending gate raises a browser notification, so a background tab is not silent. Permission is requested on the first Run click; declining changes nothing else.
+- **Handing the Run back to your agent.** Binding is mutually exclusive but reversible: the viewer's ▶ Run fences the agent, `orca orchestration run-use --id <run>` fences the viewer. Reclaim it when a gate needs a conversation, resolve the gate, release the gated task yourself (`task-update --id <task> --status ready`) if it stayed blocked, then press Run again. Two Runs can be driven in parallel this way — the viewer owns one, the agent owns the other.
 
 ## Design notes and boundaries
 

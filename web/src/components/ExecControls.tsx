@@ -10,6 +10,7 @@ import {
   useConfig,
 } from "../harness";
 import { HARNESSES, type RunStatus } from "../types";
+import { askPermission } from "../notify";
 
 const CUSTOM = "__custom__";
 const KNOWN = HARNESSES as readonly string[];
@@ -101,6 +102,11 @@ export function ExecControls({
         ".\n\nContinue?",
     );
     if (!ok) return;
+
+    // This click is the only user gesture we can ask from — Chrome refuses a
+    // bare `Notification.requestPermission()` on load. Declining is fine; the
+    // viewer just stays silent (see web/src/notify.ts).
+    askPermission();
 
     if (defHarness === CUSTOM) setDefaultHarness(resolvedDefault);
     setBusy(true);

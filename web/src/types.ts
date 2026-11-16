@@ -44,12 +44,38 @@ export interface Gate {
   resolution: string | null;
 }
 
+/** A gate still waiting for a human — resolved gates keep their resolution. */
+export function isPendingGate(g: Gate): boolean {
+  return g.status === "pending" || g.status === "open" || !g.resolution;
+}
+
+/**
+ * One row of the Run's inbox. Only `question` and `escalation` need the UI:
+ * `worker_done` already settled its task through Orca, and `status` rows are
+ * chatter. See `listMail` in server/src/orca.ts for why the viewer reads mail
+ * at all.
+ */
+export interface RunMail {
+  id: string;
+  /** `worker_done` | `question` | `escalation` | `status` | … */
+  type: string;
+  subject: string | null;
+  body: string | null;
+  fromHandle: string | null;
+  /** Sender's Dispatch — how an `escalation` is steered back to work. */
+  dispatchId: string | null;
+  /** Orca marks a row handled once someone receives it; the UI hides those. */
+  handled: boolean;
+}
+
 export interface DagResponse {
   /** Tasks are Run-scoped since Orca 1.4.160 — a DAG always belongs to one Run. */
   runId: string;
   nodes: DagNode[];
   edges: DagEdge[];
   gates: Gate[];
+  /** Questions/escalations the browser coordinator cannot answer on its own. */
+  mail: RunMail[];
   generatedAt: number;
 }
 

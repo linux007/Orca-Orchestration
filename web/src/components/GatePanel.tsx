@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { resolveGate } from "../api";
-import type { Gate } from "../types";
+import { isPendingGate, type Gate } from "../types";
 
 /**
  * Pending decision gates. Resolving one is a Run-scoped mutation, so the server
  * has to borrow a coordinator terminal for it — see `asCoordinator` there.
+ *
+ * Only the literal resolution `approved` releases the gated task (the loop in
+ * coordinator.ts checks for it); anything else leaves the task `blocked`, and
+ * with nothing else runnable the Run stops. Say so on the card — the agent that
+ * wrote the gate may have offered friendlier option labels.
  */
 export function GatePanel({
   gates,
@@ -16,7 +21,7 @@ export function GatePanel({
   onResolved: () => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
-  const pending = gates.filter((g) => g.status === "pending" || g.status === "open" || !g.resolution);
+  const pending = gates.filter(isPendingGate);
 
   if (pending.length === 0 || !runId) return null;
 
@@ -38,6 +43,10 @@ export function GatePanel({
         <div key={g.id} className="gate">
           <div className="gate__badge">Approval needed</div>
           <div className="gate__question">{g.question || "Resolve this decision gate"}</div>
+          <div className="gate__hint">
+            Only <code>approved</code> releases the task behind this gate; any other resolution
+            leaves the Run stopped.
+          </div>
           <div className="gate__actions">
             {g.options.map((opt) => (
               <button

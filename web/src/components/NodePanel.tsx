@@ -143,6 +143,9 @@ export function NodePanel({ node, onClose }: { node: DagNode; onClose: () => voi
             <span className="node-panel__hint">
               Worker terminal <code>{node.assigneeHandle}</code> · inspect output with{" "}
               <code>orca orchestration worker-read --dispatch {node.dispatchId}</code>
+              <br />
+              A worker stuck on its own interactive prompt never reaches the mail panel — answer
+              it in that terminal, then stop and retry the node if it does not resume.
             </span>
           )}
         </div>

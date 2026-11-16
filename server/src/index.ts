@@ -11,13 +11,17 @@ import {
   createRun,
   createTempCoordinatorTerminal,
   listGates,
+  listMail,
   listModels,
   listRuns,
   listTasks,
   listTerminals,
+  nudgeDispatch,
+  replyMail,
   resolveGate,
   runOrca,
   tasksToDag,
+  type RunMail,
 } from "./orca";
 import { loadConfig, saveConfig } from "./config";
 import { coordinatorStatus, startCoordinator, stopCoordinator } from "./coordinator";
@@ -147,6 +151,9 @@ app.post("/api/runs", async (req, res) => {
 /**
  * The DAG of one Run. `?run=<id>` is required — an unscoped `task-list` fails
  * with `run_required` because this process is not a bound coordinator.
+ *
+ * `mail` rides along: it is a read, and the UI needs it on the same tick it
+ * renders tasks and gates (see `listMail` for why the viewer reads it at all).
  */
 app.get("/api/dag", async (req, res) => {
   const runId = String(req.query.run ?? "").trim();
@@ -155,9 +162,13 @@ app.get("/api/dag", async (req, res) => {
     return;
   }
   try {
-    const [tasks, gates] = await Promise.all([listTasks(runId), listGates(runId)]);
+    const [tasks, gates, mail] = await Promise.all([
+      listTasks(runId),
+      listGates(runId),
+      listMail(runId).catch(() => [] as RunMail[]),
+    ]);
     const { nodes, edges } = tasksToDag(tasks);
-    res.json({ runId, nodes, edges, gates, generatedAt: Date.now() });
+    res.json({ runId, nodes, edges, gates, mail, generatedAt: Date.now() });
   } catch (err) {
     fail(res, err);
   }
@@ -227,6 +238,40 @@ app.post("/api/gates/:id/resolve", async (req, res) => {
   }
   try {
     await asCoordinator(runId, (from) => resolveGate(req.params.id, resolution, from));
+    res.json({ ok: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/**
+ * Answer a worker's `question`, or steer an `escalation`.
+ *
+ * Both are Run-scoped mutations (they wake a worker), so they go through
+ * `asCoordinator`. `via` picks the Orca verb: a `question` is answered with
+ * `reply --id` (the waiting worker already has a thread), while an escalation
+ * has no thread to reply to — the worker stopped without reporting — so it is
+ * steered with `send --to dispatch:<id>` from the message payload.
+ */
+app.post("/api/mail/:id/answer", async (req, res) => {
+  const body = String(req.body?.body ?? "").trim();
+  const runId = String(req.body?.runId ?? "").trim();
+  const via = req.body?.via === "send" ? "send" : "reply";
+  const dispatchId = String(req.body?.dispatchId ?? "").trim();
+  if (!body || !runId) {
+    res.status(400).json({ error: "body and runId required" });
+    return;
+  }
+  if (via === "send" && !dispatchId) {
+    res.status(400).json({ error: "dispatchId required when via=send" });
+    return;
+  }
+  try {
+    await asCoordinator(runId, (from) =>
+      via === "send"
+        ? nudgeDispatch(dispatchId, body, runId, from)
+        : replyMail(req.params.id, body, runId, from),
+    );
     res.json({ ok: true });
   } catch (err) {
     fail(res, err);

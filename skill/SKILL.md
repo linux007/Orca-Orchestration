@@ -71,7 +71,8 @@ Deps may only point at tasks **within the same Run**.
 Every subtask's `--spec` must be **self-contained and independently executable**, so the future executing agent **never has to ask questions or enter plan mode**:
 - **Inputs**: what it depends on, which files/interfaces to read.
 - **Outputs**: which files to create/modify, what the deliverable is.
-- **Acceptance criteria**: what "done" means (runnable tests, observable behavior).
+- **Acceptance criteria**: what "done" means, phrased as a command plus its expected result (runnable tests, observable behavior) — not "verify it works". A worker that has to invent the check will report a check it did not run.
+- **No interactive prompts**: say so in the spec. The worker must not use an interactive question tool (`AskUserQuestion`, plan mode) — nothing it renders in its own terminal ever reaches Orca, so the node just sits `dispatched` forever. If it truly needs a decision it must call `orca orchestration ask` (that lands in the Run's inbox and the viewer surfaces it), or take the pre-agreed branch and record the choice in its result.
 - Use imperative sentences; avoid vague phrasing like "investigate" or "as appropriate".
 
 ## When human approval is needed
@@ -83,13 +84,26 @@ orca orchestration gate-create \
   --options '["approved","rejected"]' --json
 ```
 
+Rules that matter more than the example:
+- **`approved` must be one of the options.** The viewer releases the gated task only on the literal resolution `approved` (`coordinator.ts`); any other value leaves the task `blocked`, and with nothing else runnable the Run **stops**. So `rejected` means "abandon this Run", never "retry with changes".
+- **Attach the gate to the task it blocks** — the downstream one — not to the task whose output you want reviewed. A gate on a completed task blocks nothing.
+- **Write the question as a decision card**: what to read (file path), what `approved` means, and what happens otherwise. The user judges from a card on the canvas, without your conversation in front of them.
+- **Model retries inside the node, not as a second gate.** A repair node re-runs the relevant checks itself and reports what is still open; a `rejected` gate cannot reopen anything.
+
+## Worker mail: questions and escalations
+The viewer reads the Run's inbox (`inbox --terminal run:<id>`, read-only), so two situations that used to stall silently now surface on the canvas and can be answered from it:
+- **`question`** — a worker called `orca orchestration ask` and is waiting for an answer. The viewer shows the text and a reply box (`reply`).
+- **`escalation`** — a worker ended its turn without `worker_done`. The viewer shows it and can `send` guidance to its Dispatch.
+
+Only `orca orchestration ask` reaches that inbox. A worker that opens its **own** interactive prompt (Claude Code's `AskUserQuestion`, a shell prompt, an editor) blocks its terminal and emits nothing — that is exactly why the spec rule above forbids it: the user would have to answer inside the worker's terminal while the DAG merely looks stuck.
+
 ## After the DAG is built: open the viewer and let Orca execute
 Once the DAG has taken shape, ask the user to open the viewer, and **tell them the Run id** (they pick it in the viewer's top bar):
 ```bash
 npx orca-dag    # run in the current project directory; serves http://localhost:8787 and opens the browser
 ```
 (If they already have it running — likely, since that command is also what installed this skill — they just need to reselect the Run.)
-In the viewer the user will: **pick your new Run in the top bar** → **watch the DAG live** → **choose a harness per node** (claude / codex / opencode / grok …, or a default fallback) → click **"▶ Run with Orca"** → **the viewer uses `worker-start` to spin up workers in dependency-parallel, waits for `worker_done`, and advances the whole graph** → **resolve approval gates**.
+In the viewer the user will: **pick your new Run in the top bar** → **watch the DAG live** → **choose a harness per node** (claude / codex / opencode / grok …, or a default fallback) → click **"▶ Run with Orca"** → **the viewer uses `worker-start` to spin up workers in dependency-parallel, waits for `worker_done`, and advances the whole graph** → **resolve approval gates** → **answer any worker mail**. Settled tasks and pending gates raise desktop notifications once the user allows them (asked on the first Run click).
 
 In other words: **execution is the viewer's job, not yours.** Your responsibility ends at "the DAG is correct".
 
@@ -100,6 +114,8 @@ orca orchestration run-use --id <run_id> --json     # re-bind yourself as coordi
 ```
 
 Reads are unaffected — `task-list --run <id>` / `gate-list --run <id>` always work. So **`run-use` to reclaim the binding before adjusting the DAG**, then let the user hit Run again.
+
+The binding is reversible in **both** directions — `run-use` takes it back, and the viewer's ▶ Run takes it back from you. That makes a hand-off worthwhile: let the viewer drive the stretch that needs no human, reclaim with `run-use` when a gate needs the user (you can show them the evidence in chat), resolve it, and — if the gated task stayed `blocked` — release it yourself with `task-update --id <task> --status ready`, then tell the user to press Run again. Two independent Runs can even be driven in parallel this way: the viewer owns one, this session owns the other.
 
 You and the user can **keep adjusting the DAG in conversation** (add/remove tasks, change deps, add gates) and the viewer reflects it live. **By default, do not run `orca orchestration dispatch` / `worker-start` yourself** — that's the viewer's loop — unless the user explicitly asks you to drive from the command line.
 

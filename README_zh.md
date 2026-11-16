@@ -142,9 +142,9 @@ npm run release 0.2.0  # 打 tag 并推送；CI 负责发 npm + 把各平台二�
 
 5. **选 harness。** 设置工具条上的 **Default harness**（所有节点的兜底），需要的话再点单个节点覆盖它的 harness/模型。设好 **Max parallel**。
 
-6. **点「▶ Run with Orca」**，确认弹窗（它会说明 viewer 将接管该 Run 的 coordinator，你的 agent 终端会被 fence —— 这是预期行为）。ready 任务并行开跑；执行中的节点出现蜡笔涂鸦；worker 回报 `worker_done` 后整张图逐步推进。
+6. **点「▶ Run with Orca」**，确认弹窗（它会说明 viewer 将接管该 Run 的 coordinator，你的 agent 终端会被 fence —— 这是预期行为）。浏览器询问通知权限时允许它：这样切到后台也能收到任务落地和待审批门禁。ready 任务并行开跑；执行中的节点出现蜡笔涂鸦；worker 回报 `worker_done` 后整张图逐步推进。
 
-7. **审批门弹出时处理它。** 计划里有审批门的话，到点会在 DAG 上浮出批准/驳回按钮。
+7. **门禁与 worker 来信弹出时处理。** 审批门浮在 DAG 上，只有 `approved` 会放行它挡住的任务。worker 通过 `orca orchestration ask` 提的问题、以及没报告就停下的 worker，会出现在左下角并带回复框 —— 卡在**自己**交互提示上的 worker 例外，那种只能去它的终端里答。
 
 8. **要改计划？** 回到 agent 对话。它用 `orca orchestration run-use --id <run>` 抢回绑定（或干脆开个新 Run 重绘），viewer 会跟着刷新。改完再点一次 Run。
 
@@ -157,7 +157,9 @@ npm run release 0.2.0  # 打 tag 并推送；CI 负责发 npm + 把各平台二�
 - **每节点选 harness**：点节点在面板里选 `claude / kimi / opencode / grok / codex` 或自定义命令（持久化到 workspace 的 `.orca-dag.config.json`）；没单独设的节点用顶栏的**默认 harness** 兜底。
 - **每节点选模型**：支持的 harness 才有 —— opencode 用 `opencode models` 枚举出下拉框；claude / codex / cursor 是自由文本（通过 `worker-start --model` 传入）。其余 harness 用各自的默认模型。
 - **▶ Run with Orca / ⏹ Stop** + **Max parallel**：启动/停止 viewer 内置的自驱动 coordinator；worker 数由 DAG 并行度决定（能并行就并行，受 "Max parallel" 上限约束）、按需拉起、空闲复用、跑完回收 —— **不用手动加 worker**。执行中显示 "N workers"。
-- **审批门**：agent `gate-create` 后，DAG 上浮出批准/驳回按钮。
+- **审批门**：agent `gate-create` 后，DAG 上浮出批准/驳回按钮。只有字面值 `approved` 会放行被挡住的任务，其他取值会让 Run 停住 —— 卡片上写明了这一点。
+- **worker 来信**：worker 通过 `orca orchestration ask` 提的问题、以及没报告就停下的 worker，会浮在角落并带回复框 —— coordinator 循环自己答不了这些。注意：worker 卡在**自己的**交互提示上时不会发出任何消息，那种只能去它的终端里回答。
+- **桌面通知**：任务落地、门禁转为待审批时发浏览器通知（首次点 Run 时申请权限）。
 - **节点详情（只读 spec）**：点节点看 spec / 状态 / 结果。改描述或依赖 → 让 agent 重绘 DAG。
 - **手绘蜡笔风**：🖍️ SVG feTurbulence 波动描边 + 米色速写本画布。
 
@@ -165,7 +167,7 @@ npm run release 0.2.0  # 打 tag 并推送；CI 负责发 npm + 把各平台二�
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/api/dag?run=<id>` | 该 Run 的 DAG：`{ runId, nodes, edges, gates, generatedAt }` |
+| `GET` | `/api/dag?run=<id>` | 该 Run 的 DAG：`{ runId, nodes, edges, gates, mail, generatedAt }` |
 | `GET` | `/api/runs` | 列出编排 Run |
 | `POST` | `/api/runs` | `{ objective }`：新建一个 Run（走一次性 coordinator 终端） |
 | `GET` | `/api/terminals` | 列出 Orca 终端 |
@@ -173,6 +175,7 @@ npm run release 0.2.0  # 打 tag 并推送；CI 负责发 npm + 把各平台二�
 | `POST` | `/api/run-stop` | 停止 coordinator 并回收已拉起的 worker |
 | `GET` | `/api/run-status` | coordinator 实时状态：`{ running, busy, attempts, error, … }` |
 | `POST` | `/api/gates/:id/resolve` | `{ resolution, runId }`：解决审批门 |
+| `POST` | `/api/mail/:id/answer` | `{ body, runId, via?: "reply" \| "send", dispatchId? }`：回复 worker 提问（`reply`）或给停下的 worker 传话（`send`） |
 | `POST` | `/api/reset` | `{ confirmAllRuns: true }`：`orca orchestration reset --tasks` —— 清空**所有** Run 的任务 |
 | `GET` | `/api/models/:harness` | 该 harness 可选的模型（目前只有 opencode 能枚举） |
 | `GET` | `/api/config` | viewer 配置（harness/模型选择、最多并行、布局、上次的 Run），存在 workspace 的 `.orca-dag.config.json` |
@@ -197,10 +200,12 @@ web/src/
   components/ExecControls.tsx 默认 harness + 最多并行 + Run/Stop + 实时状态
   components/NodePanel.tsx    节点详情 + 每节点 harness 与模型选择
   components/GatePanel.tsx    审批门浮层
+  components/MailPanel.tsx    coordinator 循环答不了的 worker 提问 / 停摆
   components/RunPicker.tsx    Run 选择器 + 新建 Run
   components/DoodleSelect.tsx 手绘风下拉框（portal 弹层、搜索、键盘导航）
   harness.ts                响应式配置 store：每节点 harness/模型 / 默认 harness / 最多并行 / 布局（/api/config 持久化）
   layout.ts                 布局算法：dagre 分层（LR/TB）+ 力导向（Fruchterman–Reingold）
+  notify.ts                 桌面通知：任务落地、门禁待审批
   types.ts / api.ts
 scripts/
   build-binary.mjs        vite build → 内嵌资源和 skill → bun --compile → dist/orca-dag
@@ -209,6 +214,16 @@ scripts/
   check-skill.mjs         守住 SKILL.md 的 frontmatter —— skills CLI 靠它识别安装
   release.mjs             `npm run release <version>`：检查、打 tag、推送，剩下交给 CI
 ```
+
+## 人工卡点、worker 来信与通知
+
+viewer 驱动的 Run 只有一个协调者，而且它是浏览器 —— 所以任何需要人来做的事，都必须**由 viewer 呈现出来**，不能指望某个对话会话替你盯着。
+
+- **门禁只有 `approved` 放行。** `gate-create` 挡住它的任务；派发循环只认字面值 `approved`（`coordinator.ts`）才会解除阻塞。其他任何取值都让任务保持 `blocked`，而一个再没有可运行任务的 Run 会停下 —— 所以 `rejected` 的含义是「到此为止」，不是「打回重做」。判断标准要写进门禁的 question：点按钮的人手上只有画布上那张卡片。
+- **worker 来信可读、可回。** 循环只看任务状态，于是 worker 调 `orca orchestration ask` 提的问题没人接、没发 `worker_done` 就结束（`escalation`）的 worker 看起来只是卡住。viewer 读 Run 的收件箱（`inbox --terminal run:<id>`，只读 —— **绝不用 `check`**，它会把整批邮件消费掉，让别人再也看不到），把两种情况浮在左下角：提问用 `reply` 回答，停摆用 `send` 经它的 dispatch 传话。
+- **worker 自己弹的交互提示，Orca 根本看不到。** Claude Code 的 `AskUserQuestion`、shell 提示、终端里的编辑器，都会把那个 worker 卡住且不产生任何消息 —— 这不是 viewer 能修的。修法在 spec 里：要求 worker 不得使用交互式提示，需要决策就走 `orca orchestration ask` 或按预设分支处理。这两条规则 skill 里都写了。
+- **桌面通知** 补上 UI 够不到的场景：任务落地、门禁转为待审批时弹浏览器通知，后台标签页不会毫无动静。权限在首次点 Run 时申请；拒绝就退回原来的行为。
+- **把 Run 交还给你的 agent。** 绑定是互斥但可逆的：viewer 点 ▶ Run 会 fence agent，`orca orchestration run-use --id <run>` 会把 viewer fence 掉。门禁需要对话时抢回来、处理完门禁，如果被挡任务仍是 `blocked` 就自己放行（`task-update --id <task> --status ready`），然后再点 Run。这样还能并行驱动两个 Run —— 一个归 viewer，一个归 agent。
 
 ## 设计说明与边界
 
