@@ -33,7 +33,7 @@ Split "planning by chatting with an agent" from "visualizing + executing" into t
 ```
 
 1. You chat in **your own agent**. It loads the `orca-dag` skill, opens a **Run** with `orca orchestration run-create`, then builds the tasks and dependencies into that Run via `task-create --deps …`.
-2. Open the viewer (`npx orca-dag`). Pick the Run in the top bar; it polls `orca orchestration task-list --run <id> --json` every 2 seconds, lays out with **dagre**, renders with **React Flow**, and recolors statuses live.
+2. Open the viewer (`npx orca-dag`). Pick the Run in the top bar; the server polls `orca orchestration task-list --run <id> --json` (the concise view — specs and results are fetched only when you open a node) and pushes changes to the browser over SSE, so an idle graph costs nothing. The viewer lays out with **dagre**, renders with **React Flow**, and recolors statuses live.
 3. In the viewer, pick a harness per node (or rely on a default fallback), set "Max parallel", and click **"▶ Run with Orca"**.
 4. The viewer's **coordinator loop** takes over: it binds one of its own Orca terminals as the Run's coordinator (gaining mutation authority), then on each tick finds every `ready` task and calls `orca orchestration worker-start --task <id> --agent <harness>` **in parallel** — **Orca itself** creates the worker terminal, waits for readiness, injects the dispatch, and returns a **Dispatch** (one attempt). The worker finishes with `worker_done --outcome` → Orca **automatically** marks the task and dispatch completed/failed → dependents flip to `ready` → repeat until the graph is done, then `worker-stop` reclaims the workers.
 5. To change the plan: go back to the agent conversation and have it redraw the DAG.
@@ -139,13 +139,13 @@ An end-to-end pass, starting from nothing installed:
 
    The agent will ask a few clarifying questions, write `docs/PRD.md` / `docs/TECH_SPEC.md`, then run `orca orchestration run-create` + `task-create --deps …`. When it's done it tells you the **Run id** (like `run_ab12cd34ef56`).
 
-4. **Pick the Run** the agent just named in the top-bar dropdown. The DAG appears and refreshes every 2 seconds — you can keep chatting with the agent to reshape it and watch nodes pop in live.
+4. **Pick the Run** the agent just named in the top-bar dropdown. The DAG appears and updates live — you can keep chatting with the agent to reshape it and watch nodes pop in live.
 
 5. **Choose harnesses.** Set the toolbar's **Default harness** (fallback for every node), and optionally click individual nodes to override harness/model per node. Set **Max parallel**.
 
 6. **Click "▶ Run with Orca"** and accept the confirmation (it explains that the viewer takes over the Run's coordinator slot, fencing your agent's terminal — that's expected). Allow notifications if the browser asks: settled tasks and pending gates then reach you while the tab is in the background. Ready tasks fire in parallel; running nodes get the crayon scribble; the graph advances as workers report `worker_done`.
 
-7. **Resolve gates and worker mail when they pop.** Approval gates float over the DAG; only `approved` releases the task they block. Questions a worker asks (via `orca orchestration ask`) and workers that stop without reporting appear in the bottom corner with a reply box — a worker stuck on its *own* interactive prompt instead has to be answered in its terminal.
+7. **Resolve gates and worker mail when they pop.** Approval gates float over the DAG; only `approved` releases the task they block. Questions a worker asks (via `orca orchestration ask`) and workers that stop without reporting appear in the bottom corner with a reply box; options the worker offered (`ask --options`) become one-click answers, and the answer wakes the same worker session. A task that ends `failed` gets a card with the worker's report and two ways out: **Accept as done** (dependents run) or **Retry**. A worker stuck on its *own* interactive prompt instead has to be answered in its terminal.
 
 8. **Change the plan?** Go back to the agent conversation. It reclaims the Run with `orca orchestration run-use --id <run>` (or just opens a fresh Run and redraws), and the viewer follows along. Then hit Run again.
 
@@ -159,7 +159,8 @@ An end-to-end pass, starting from nothing installed:
 - **Per-node model override**: for harnesses that support it — opencode gets a dropdown enumerated from `opencode models`; claude / codex / cursor get free-text (passed via `worker-start --model`). Others run on their default model.
 - **▶ Run with Orca / ⏹ Stop** + **Max parallel**: start/stop the viewer's built-in self-driven coordinator; worker count follows the DAG's parallelism (whatever is ready runs together, capped by "Max parallel"), spun up on demand, reused while idle, reclaimed when done — **no manual worker management**. While running it shows "N workers".
 - **Approval gates**: after the agent runs `gate-create`, approve/reject buttons float over the DAG. Only the literal resolution `approved` releases the gated task — any other value leaves the Run stopped, so the card says so.
-- **Worker mail**: questions a worker asks via `orca orchestration ask`, and workers that stop without reporting, surface in the corner with a reply box — the coordinator loop cannot answer them on its own. A worker blocked on its *own* interactive prompt emits nothing; answer that in its terminal.
+- **Worker mail**: questions a worker asks via `orca orchestration ask`, and workers that stop without reporting, surface in the corner with a reply box — the coordinator loop cannot answer them on its own. Options passed with `ask --options` render as one-click answers. The worker keeps its session while it waits, so answering here is how you "continue the conversation" with a node. A worker blocked on its *own* interactive prompt emits nothing; answer that in its terminal.
+- **Failed-task cards**: a `failed` node used to just turn red while its dependents waited forever and the loop stopped. Now it gets a card showing the worker's report: **Accept as done** (`task-update completed`, report kept, dependents released) or **Retry** (`task-update ready`; press Run again if the loop had stopped).
 - **Desktop notifications**: a task settling or a gate going pending raises a browser notification (permission is asked on the first Run click).
 - **Node details (read-only spec)**: click a node to see its spec / status / result. To change the spec or deps, have the agent redraw the DAG.
 - **Hand-drawn crayon style**: 🖍️ SVG feTurbulence wobbled strokes on a cream sketchbook canvas.
@@ -168,7 +169,10 @@ An end-to-end pass, starting from nothing installed:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/dag?run=<id>` | The Run's DAG: `{ runId, nodes, edges, gates, mail, generatedAt }` |
+| `GET` | `/api/dag?run=<id>` | The Run's DAG: `{ runId, nodes, edges, gates, mail, generatedAt }` (no spec/result — see `/api/task`) |
+| `GET` | `/api/events?run=<id>` | SSE stream of the same snapshot, pushed only when tasks, gates or mail change (1.5s while a worker runs, 5s idle) |
+| `GET` | `/api/task?run=<id>&id=<task>` | One task's full record: `{ id, title, spec, result }` |
+| `POST` | `/api/tasks/:id/status` | `{ runId, status: "ready" \| "completed" }`: retry a failed task or accept it as done (the worker's report is kept) |
 | `GET` | `/api/runs` | List orchestration Runs |
 | `POST` | `/api/runs` | `{ objective }`: create a Run (via a throwaway coordinator terminal) |
 | `GET` | `/api/terminals` | List Orca terminals |
@@ -188,7 +192,7 @@ An end-to-end pass, starting from nothing installed:
 ```
 skill/SKILL.md            graph-building conventions + spec-writing rules + how execution works + boundaries
 server/src/
-  index.ts                Express: dag / runs / run / run-stop / run-status / gates / reset / models / config; serves the SPA
+  index.ts                Express: dag / events (SSE) / task / runs / run / run-stop / run-status / gates / mail / tasks status / reset / models / config; serves the SPA
   coordinator.ts          self-driven coordinator loop: polls the DAG, fires ready tasks in parallel via worker-start
   orca.ts                 orca CLI wrapper: task-list→DAG, worker-start/legacy/opencode workers, gates, terminals, models
   config.ts               viewer config persistence: .orca-dag.config.json in the workspace (/api/config)
@@ -196,12 +200,13 @@ server/src/
   uninstall.ts            `orca-dag uninstall`: the exact mirror of skill.ts, plus stale-terminal cleanup
   webAssets.ts            loader for the frontend assets (and the skill) embedded at build time
 web/src/
-  App.tsx                 full-width DAG shell, 2s polling, hand-drawn SVG filter defs
+  App.tsx                 full-width DAG shell, SSE subscription, hand-drawn SVG filter defs
   components/DagView.tsx     React Flow graph + status nodes (harness label, crayon animations)
   components/ExecControls.tsx default harness + max parallel + Run/Stop + live status
   components/NodePanel.tsx    node details + per-node harness & model pickers
   components/GatePanel.tsx    approval-gate overlay
-  components/MailPanel.tsx    worker questions / escalations the loop cannot answer
+  components/MailPanel.tsx    worker questions / escalations the loop cannot answer (one-click options)
+  components/FailedPanel.tsx  failed-task cards: worker report + Accept as done / Retry
   components/RunPicker.tsx    Run selector + "New Run"
   components/DoodleSelect.tsx hand-drawn select (portal dropdown, search, keyboard nav)
   harness.ts                reactive config store: per-node harness/model, default, max parallel, layout (persisted via /api/config)
@@ -222,7 +227,9 @@ A viewer-driven Run has exactly one coordinator, and it is a browser — so anyt
 
 - **Gates only release on `approved`.** `gate-create` blocks its task; the dispatch loop unblocks it only for the literal resolution `approved` (`coordinator.ts`). Any other value leaves the task `blocked`, and a Run with nothing else runnable stops — `rejected` means "stop here", not "retry". Put the pass criteria in the gate's question: the card on the canvas is all the context the person clicking it has.
 - **Worker mail is read and answerable.** The loop watches task status only, so a worker that calls `orca orchestration ask` waits for an answer nobody reads, and a worker that ends its turn without `worker_done` (an `escalation`) simply looks stuck. The viewer reads the Run's inbox (`inbox --terminal run:<id>`, read-only — never `check`, which consumes the batch and hides it from everyone else) and floats both in the bottom corner: `reply` answers a question, `send` steers a stopped worker through its dispatch.
-- **Native interactive prompts are invisible to Orca.** `AskUserQuestion`, a shell prompt, an editor inside a worker's terminal blocks that worker and emits no message at all — no viewer change can see it. The fix belongs in the spec: tell workers not to use interactive prompts and to `orca orchestration ask` or take a pre-agreed branch instead. The skill carries both rules.
+- **Native interactive prompts are invisible to Orca.** `AskUserQuestion`, a shell prompt, an editor inside a worker's terminal blocks that worker and emits no message at all — no viewer change can see it. The fix belongs in the spec: tell workers not to use interactive prompts. The skill carries that rule.
+- **Blockers go to `ask`, not to `failed`.** A worker that reports `failed` settles its Dispatch and releases its terminal — there is no session left to talk to, and every dependent waits. A worker that calls `orca orchestration ask` ends its turn but stays alive; the question lands on the canvas and the answer wakes it with its context intact (verified on Orca 1.4.257). So the skill now has every spec carry an outcome contract: report `failed` only when the change itself is broken; send environment, data, decision, or unreachable-acceptance blockers to `ask` with options; otherwise report `completed` with open items. Where the repo already has failing tests, write acceptance against a baseline, not "all tests pass".
+- **Failed tasks are a decision, not a dead end.** If a node still fails, its card offers **Accept as done** or **Retry**, so the Run never stops silently.
 - **Desktop notifications** cover what the UI cannot: a settled task or a pending gate raises a browser notification, so a background tab is not silent. Permission is requested on the first Run click; declining changes nothing else.
 - **Handing the Run back to your agent.** Binding is mutually exclusive but reversible: the viewer's ▶ Run fences the agent, `orca orchestration run-use --id <run>` fences the viewer. Reclaim it when a gate needs a conversation, resolve the gate, release the gated task yourself (`task-update --id <task> --status ready`) if it stayed blocked, then press Run again. Two Runs can be driven in parallel this way — the viewer owns one, the agent owns the other.
 
