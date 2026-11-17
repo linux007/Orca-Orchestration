@@ -264,6 +264,8 @@ export async function listTasks(runId: string): Promise<OrcaTask[]> {
     "task-list",
     "--run",
     runId,
+    // Without --full, Orca (seen on 1.4.257) returns only id/status/title/deps: no spec, result or task_title.
+    "--full",
   ]);
   return result.tasks ?? [];
 }
