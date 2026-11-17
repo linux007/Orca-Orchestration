@@ -75,23 +75,35 @@ export class OrcaCliError extends Error {
 /**
  * A task row from `orchestration task-list --run <id> --json`.
  *
+ * The two views return DIFFERENT fields (Orca 1.4.257):
+ *   - concise (no `--full`): `id`, `status`, `title`, `deps`
+ *   - `--full`: those except `title`, plus `spec`, `result`, `task_title`,
+ *     `display_name`, `created_at`, `completed_at`, …
+ *
+ * The DAG poll stays on the concise view — a `result` can be an entire worker
+ * report — so everything only `--full` carries is optional here and read on
+ * demand through `getTask`.
+ *
  * `deps` is a JSON-encoded *string* of task ids, not an array. `assignee_handle`
  * and `dispatch_id` are only present while `status === "dispatched"` — the
  * runtime strips them from every other row.
  */
 export interface OrcaTask {
   id: string;
-  parent_id: string | null;
-  created_by_terminal_handle: string | null;
-  spec: string;
   status: TaskStatus;
   deps: string;
-  result: string | null;
-  created_at: string;
-  completed_at: string | null;
-  task_title: string | null;
-  display_name: string | null;
-  run_id: string;
+  /** Concise view only — the node label lives here. */
+  title?: string | null;
+  // --- `--full` only -------------------------------------------------------
+  spec?: string;
+  result?: string | null;
+  created_at?: string;
+  completed_at?: string | null;
+  task_title?: string | null;
+  display_name?: string | null;
+  parent_id?: string | null;
+  created_by_terminal_handle?: string | null;
+  run_id?: string;
   assignee_handle?: string | null;
   dispatch_id?: string | null;
 }
@@ -102,10 +114,10 @@ export interface OrcaRun {
   objective: string;
   coordinator_handle: string | null;
   consumer_generation: number;
-  /** 1 for the inspect-only `run_legacy_local` audit tombstone. */
-  legacy: number;
-  created_at: string;
-  updated_at: string;
+  /** 1 for the inspect-only `run_legacy_local` audit tombstone; `true` in the concise view. */
+  legacy: number | boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 /** One attempt of a task, as returned by `dispatch-show` / `worker-show`. */
@@ -127,8 +139,7 @@ export interface DagNode {
   id: string;
   label: string;
   status: TaskStatus;
-  spec: string;
-  result: string | null;
+  // No spec/result: the poll is concise. The node panel fetches the full record.
   createdAt: string;
   completedAt: string | null;
   /** Live attempt, present only while dispatched. */
@@ -214,13 +225,25 @@ function parseDeps(deps: string | null | undefined): string[] {
 
 // --- Runs ------------------------------------------------------------------
 
-/** List Runs, newest first. Read-only: needs no coordinator terminal. */
+/**
+ * List Runs, newest first. Read-only: needs no coordinator terminal.
+ *
+ * `--full` is required: the concise view drops `created_at` (so the sort below
+ * would do nothing) and reports the audit tombstone's `legacy` as boolean
+ * `true`, which slips past a `!== 1` filter.
+ */
 export async function listRuns(): Promise<OrcaRun[]> {
-  const result = await runOrca<{ runs?: OrcaRun[] }>(["orchestration", "run-list", "--limit", "50"]);
+  const result = await runOrca<{ runs?: OrcaRun[] }>([
+    "orchestration",
+    "run-list",
+    "--limit",
+    "50",
+    "--full",
+  ]);
   const runs = result.runs ?? [];
   return runs
-    .filter((r) => r.legacy !== 1) // the audit tombstone is inspect-only and always empty
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    .filter((r) => Number(r.legacy ?? 0) !== 1) // the audit tombstone is inspect-only and always empty
+    .sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? 1 : -1));
 }
 
 /**
@@ -264,10 +287,25 @@ export async function listTasks(runId: string): Promise<OrcaTask[]> {
     "task-list",
     "--run",
     runId,
-    // Without --full, Orca (seen on 1.4.257) returns only id/status/title/deps: no spec, result or task_title.
-    "--full",
   ]);
   return result.tasks ?? [];
+}
+
+/**
+ * One task's full record — the node panel's Spec/Result.
+ *
+ * Deliberately separate from `listTasks`: `--full` drags every task's spec and
+ * result through the poll, and a worker report can be tens of KB.
+ */
+export async function getTask(runId: string, taskId: string): Promise<OrcaTask | null> {
+  const result = await runOrca<{ tasks: OrcaTask[] }>([
+    "orchestration",
+    "task-list",
+    "--run",
+    runId,
+    "--full",
+  ]);
+  return (result.tasks ?? []).find((t) => t.id === taskId) ?? null;
 }
 
 /** Fetch a Run's decision gates, normalized for the UI. */
@@ -902,12 +940,12 @@ export function tasksToDag(tasks: OrcaTask[]): { nodes: DagNode[]; edges: DagEdg
   const idSet = new Set(tasks.map((t) => t.id));
   const nodes: DagNode[] = tasks.map((t) => ({
     id: t.id,
-    label: (t.display_name || t.task_title || t.spec || t.id).trim(),
+    // `title` is what the concise poll carries; the rest only exist on a full
+    // record, so they only win when a caller passes one in (tests).
+    label: (t.display_name || t.task_title || t.title || t.spec || t.id).trim(),
     status: t.status,
-    spec: t.spec,
-    result: t.result,
-    createdAt: t.created_at,
-    completedAt: t.completed_at,
+    createdAt: t.created_at ?? "",
+    completedAt: t.completed_at ?? null,
     dispatchId: t.dispatch_id ?? null,
     assigneeHandle: t.assignee_handle ?? null,
   }));

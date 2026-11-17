@@ -19,14 +19,23 @@ export interface DagNode {
   id: string;
   label: string;
   status: TaskStatus;
-  spec: string;
-  result: string | null;
   createdAt: string;
   completedAt: string | null;
   /** Current Orca Dispatch (one attempt). Only set while dispatched. */
   dispatchId: string | null;
   /** Terminal running the current attempt. Only set while dispatched. */
   assigneeHandle: string | null;
+}
+
+/**
+ * One task's full record. Kept out of the DAG payload: a `result` can be a whole
+ * worker report, and the poll runs while the panel is closed too.
+ */
+export interface TaskDetail {
+  id: string;
+  title: string | null;
+  spec: string;
+  result: string | null;
 }
 
 export interface DagEdge {

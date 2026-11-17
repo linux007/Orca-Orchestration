@@ -10,6 +10,7 @@ import {
   closeTerminal,
   createRun,
   createTempCoordinatorTerminal,
+  getTask,
   listGates,
   listMail,
   listModels,
@@ -162,13 +163,109 @@ app.get("/api/dag", async (req, res) => {
     return;
   }
   try {
-    const [tasks, gates, mail] = await Promise.all([
-      listTasks(runId),
-      listGates(runId),
-      listMail(runId).catch(() => [] as RunMail[]),
+    res.json(await buildDag(runId));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/** One snapshot of a Run, shared by `/api/dag` and the SSE stream. */
+async function buildDag(runId: string) {
+  const [tasks, gates, mail] = await Promise.all([
+    listTasks(runId),
+    listGates(runId),
+    listMail(runId).catch(() => [] as RunMail[]),
+  ]);
+  const { nodes, edges } = tasksToDag(tasks);
+  return { runId, nodes, edges, gates, mail, generatedAt: Date.now() };
+}
+
+/**
+ * Live DAG stream (SSE).
+ *
+ * The browser used to poll `/api/dag` every 2s — two `orca` subprocesses per
+ * open tab per tick, changed or not. Now the server polls on the tab's behalf
+ * and pushes only when the snapshot's signature changes, fast while a worker is
+ * in flight and slow once the DAG is idle.
+ *
+ * `check --wait` would be the truly event-driven way in, but it needs a bound
+ * coordinator terminal and the viewer must also work while it owns no binding,
+ * so this stays a read-only poll behind a push.
+ */
+const SSE_ACTIVE_MS = 1500;
+const SSE_IDLE_MS = 5000;
+app.get("/api/events", (req, res) => {
+  const runId = String(req.query.run ?? "").trim();
+  if (!runId) {
+    res.status(400).json({ error: "run query parameter required", code: "run_required" });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  let closed = false;
+  let tickTimer: NodeJS.Timeout | null = null;
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(": ping\n\n");
+  }, 25_000);
+
+  const signature = (d: Awaited<ReturnType<typeof buildDag>>) =>
+    JSON.stringify([
+      d.nodes.map((n) => [n.id, n.status, n.label, n.dispatchId, n.assigneeHandle]),
+      d.gates.map((g) => [g.id, g.status, g.resolution]),
+      d.mail.map((m) => [m.id, m.handled]),
     ]);
-    const { nodes, edges } = tasksToDag(tasks);
-    res.json({ runId, nodes, edges, gates, mail, generatedAt: Date.now() });
+  let last = "";
+
+  const tick = async () => {
+    let next = SSE_IDLE_MS;
+    try {
+      const dag = await buildDag(runId);
+      if (closed) return;
+      const sig = signature(dag);
+      if (sig !== last) {
+        last = sig;
+        res.write(`event: dag\ndata: ${JSON.stringify(dag)}\n\n`);
+      }
+      if (dag.nodes.some((n) => n.status === "dispatched")) next = SSE_ACTIVE_MS;
+    } catch (err) {
+      if (closed) return;
+      res.write(`event: error\ndata: ${JSON.stringify({ error: String((err as Error).message ?? err) })}\n\n`);
+    }
+    if (!closed) tickTimer = setTimeout(tick, next);
+  };
+  const stop = () => {
+    closed = true;
+    clearInterval(heartbeat);
+    if (tickTimer) clearTimeout(tickTimer);
+  };
+  req.on("close", stop);
+  void tick();
+});
+
+/** One task's full record (spec/result) — fetched when a node panel opens. */
+app.get("/api/task", async (req, res) => {
+  const runId = String(req.query.run ?? "").trim();
+  const taskId = String(req.query.id ?? "").trim();
+  if (!runId || !taskId) {
+    res.status(400).json({ error: "run and id query parameters required", code: "task_required" });
+    return;
+  }
+  try {
+    const task = await getTask(runId, taskId);
+    if (!task) {
+      res.status(404).json({ error: "task not found", code: "task_not_found" });
+      return;
+    }
+    res.json({
+      id: task.id,
+      title: task.title ?? task.task_title ?? task.display_name ?? null,
+      spec: task.spec ?? "",
+      result: task.result ?? null,
+    });
   } catch (err) {
     fail(res, err);
   }

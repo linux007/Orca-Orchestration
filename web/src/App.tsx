@@ -5,7 +5,7 @@ import { GatePanel } from "./components/GatePanel";
 import { MailPanel } from "./components/MailPanel";
 import { NodePanel } from "./components/NodePanel";
 import { RunPicker } from "./components/RunPicker";
-import { fetchDag, resetTasks } from "./api";
+import { fetchDag, resetTasks, subscribeDag } from "./api";
 import { initConfig, setLayout, setRunId, useConfig } from "./harness";
 import { notify } from "./notify";
 import {
@@ -18,7 +18,6 @@ import {
 } from "./types";
 
 const EMPTY: DagResponse = { runId: "", nodes: [], edges: [], gates: [], mail: [], generatedAt: 0 };
-const POLL_MS = 2000;
 
 /**
  * Hand-drawn wobble filters — the whole "drawn with a crayon" illusion.
@@ -161,7 +160,6 @@ export default function App() {
   const layout: LayoutKind = config.layout || "layered-lr";
   // bump to force a fresh auto-layout (discarding manual drags)
   const [reorgNonce, setReorgNonce] = useState(0);
-  const timer = useRef<number | null>(null);
 
   // hydrate harness/concurrency/layout/run config from the server-side file
   // once; RunPicker must not auto-pick a Run until this has settled, or its
@@ -193,13 +191,33 @@ export default function App() {
     }
   }, [runId]);
 
+  // Live stream: the server pushes a snapshot only when the Run changed. The
+  // one-shot `refresh()` seeds the first frame (and covers the no-Run case);
+  // EventSource reconnects on its own if the process restarts.
   useEffect(() => {
+    if (!runId) {
+      setDag(EMPTY);
+      return;
+    }
+    let alive = true;
+    let stop = () => {};
     refresh();
-    timer.current = window.setInterval(refresh, POLL_MS);
+    stop = subscribeDag(
+      runId,
+      (next) => {
+        if (!alive) return;
+        setDag(next);
+        setConnError(null);
+      },
+      (message) => {
+        if (alive) setConnError(message);
+      },
+    );
     return () => {
-      if (timer.current) window.clearInterval(timer.current);
+      alive = false;
+      stop();
     };
-  }, [refresh]);
+  }, [runId, refresh]);
 
   // --- desktop notifications -------------------------------------------
   // The tab is usually in the background while workers run; a settled node or a
@@ -415,7 +433,12 @@ export default function App() {
 
             {/* keyed by node so switching selection replays the card's entrance */}
             {selected && (
-              <NodePanel key={selected.id} node={selected} onClose={() => setSelectedId(null)} />
+              <NodePanel
+                key={selected.id}
+                node={selected}
+                runId={runId}
+                onClose={() => setSelectedId(null)}
+              />
             )}
           </div>
         </section>

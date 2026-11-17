@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchModels } from "../api";
+import { fetchModels, fetchTask } from "../api";
 import {
   effectiveHarness,
   getDefaultHarness,
@@ -9,7 +9,7 @@ import {
   setNodeModel,
   useConfig,
 } from "../harness";
-import { HARNESSES, MODEL_PICKER, STATUS_META, type DagNode } from "../types";
+import { HARNESSES, MODEL_PICKER, STATUS_META, type DagNode, type TaskDetail } from "../types";
 import { DoodleSelect } from "./DoodleSelect";
 
 const INHERIT = "__inherit__";
@@ -21,8 +21,34 @@ const KNOWN = HARNESSES as readonly string[];
  * rewrite a stored spec — to change the plan, ask your agent to redraw the DAG).
  * The harness is this node's choice of agent when the coordinator fires it.
  */
-export function NodePanel({ node, onClose }: { node: DagNode; onClose: () => void }) {
+export function NodePanel({
+  node,
+  runId,
+  onClose,
+}: {
+  node: DagNode;
+  runId: string;
+  onClose: () => void;
+}) {
   const meta = STATUS_META[node.status];
+  // Spec/result are not in the DAG payload (a result can be a whole worker
+  // report); fetch the full record when this panel opens and again when the
+  // node's status changes, so a finished node shows its report.
+  const [detail, setDetail] = useState<TaskDetail | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setDetail(null);
+    fetchTask(runId, node.id)
+      .then((d) => {
+        if (alive) setDetail(d);
+      })
+      .catch(() => {
+        /* the panel still shows harness controls; spec stays blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [runId, node.id, node.status]);
   useConfig(); // re-render when the default harness (or this node's) changes
   const stored = getNodeHarness(node.id);
   const [sel, setSel] = useState(stored === null ? INHERIT : KNOWN.includes(stored) ? stored : CUSTOM);
@@ -153,16 +179,18 @@ export function NodePanel({ node, onClose }: { node: DagNode; onClose: () => voi
 
       <div className="node-panel__field">
         <span className="node-panel__key">Spec</span>
-        <p className="node-panel__spec-ro">{node.spec}</p>
+        <p className="node-panel__spec-ro">
+          {detail ? detail.spec || "(empty spec)" : "Loading…"}
+        </p>
         <span className="node-panel__hint">
           To change the spec or deps, have your agent redraw the DAG in a fresh Run.
         </span>
       </div>
 
-      {node.result && (
+      {detail?.result && (
         <div className="node-panel__field">
           <span className="node-panel__key">Result</span>
-          <pre className="node-panel__result">{node.result}</pre>
+          <pre className="node-panel__result">{detail.result}</pre>
         </div>
       )}
     </aside>

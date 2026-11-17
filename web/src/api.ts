@@ -1,4 +1,4 @@
-import type { DagResponse, OrcaRun, RunStatus, ViewerConfig } from "./types";
+import type { DagResponse, OrcaRun, RunStatus, TaskDetail, ViewerConfig } from "./types";
 
 /** An /api error that carries Orca's machine-readable error code. */
 export class ApiError extends Error {
@@ -52,6 +52,39 @@ export async function createRun(objective: string): Promise<OrcaRun> {
 /** The DAG of one Run. */
 export async function fetchDag(runId: string): Promise<DagResponse> {
   return get<DagResponse>(`/api/dag?run=${encodeURIComponent(runId)}`);
+}
+
+/** One task's full record — the node panel's spec/result. */
+export async function fetchTask(runId: string, taskId: string): Promise<TaskDetail> {
+  return get<TaskDetail>(
+    `/api/task?run=${encodeURIComponent(runId)}&id=${encodeURIComponent(taskId)}`,
+  );
+}
+
+/**
+ * Live DAG stream. The server pushes a snapshot only when something changed, so
+ * the browser no longer spawns `orca` on a timer. EventSource reconnects by
+ * itself; `onError` just surfaces that the stream is interrupted.
+ */
+export function subscribeDag(
+  runId: string,
+  onDag: (dag: DagResponse) => void,
+  onError: (message: string) => void,
+): () => void {
+  const es = new EventSource(`/api/events?run=${encodeURIComponent(runId)}`);
+  es.addEventListener("dag", (e) => {
+    try {
+      onDag(JSON.parse((e as MessageEvent).data) as DagResponse);
+    } catch {
+      /* torn frame — the next push supersedes it */
+    }
+  });
+  es.addEventListener("error", (e) => {
+    const data = (e as MessageEvent).data;
+    if (data) onError(String((JSON.parse(data) as { error?: string }).error ?? data));
+  });
+  es.onerror = () => onError("live stream interrupted — reconnecting");
+  return () => es.close();
 }
 
 export async function fetchRunStatus(): Promise<RunStatus> {
