@@ -21,6 +21,7 @@ import {
   replyMail,
   resolveGate,
   runOrca,
+  taskUpdate,
   tasksToDag,
   type RunMail,
 } from "./orca";
@@ -350,6 +351,27 @@ app.post("/api/gates/:id/resolve", async (req, res) => {
  * has no thread to reply to — the worker stopped without reporting — so it is
  * steered with `send --to dispatch:<id>` from the message payload.
  */
+/**
+ * Settle a failed task by hand: `ready` retries it (the loop re-dispatches it
+ * while running; otherwise press Run), `completed` accepts the work as done and
+ * releases its dependents. Only these two — anything else is not a recovery.
+ * No `--result`: that would overwrite the worker's report.
+ */
+app.post("/api/tasks/:id/status", async (req, res) => {
+  const runId = String(req.body?.runId ?? "").trim();
+  const status = String(req.body?.status ?? "");
+  if (!runId || (status !== "ready" && status !== "completed")) {
+    res.status(400).json({ error: "runId and status (ready|completed) required" });
+    return;
+  }
+  try {
+    await asCoordinator(runId, (from) => taskUpdate(req.params.id, status, runId, from));
+    res.json({ ok: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 app.post("/api/mail/:id/answer", async (req, res) => {
   const body = String(req.body?.body ?? "").trim();
   const runId = String(req.body?.runId ?? "").trim();

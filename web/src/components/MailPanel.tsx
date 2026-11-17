@@ -36,8 +36,8 @@ export function MailPanel({
   );
   if (!runId || open.length === 0) return null;
 
-  async function answer(m: RunMail) {
-    const body = (drafts[m.id] ?? "").trim();
+  async function answer(m: RunMail, picked?: string) {
+    const body = (picked ?? drafts[m.id] ?? "").trim();
     if (!body) return;
     const via = m.type === "escalation" ? "send" : "reply";
     if (via === "send" && !m.dispatchId) {
@@ -67,6 +67,20 @@ export function MailPanel({
             </div>
             {m.subject && <div className="mail__subject">{m.subject}</div>}
             {m.body && <pre className="mail__body">{m.body}</pre>}
+            {m.options.length > 0 && (
+              <div className="mail__actions">
+                {m.options.map((opt) => (
+                  <button
+                    key={opt}
+                    className="btn btn--gate btn--ok"
+                    disabled={busyId === m.id}
+                    onClick={() => answer(m, opt)}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               className="mail__input"
               rows={2}

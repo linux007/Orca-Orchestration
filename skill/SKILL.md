@@ -72,7 +72,17 @@ Every subtask's `--spec` must be **self-contained and independently executable**
 - **Inputs**: what it depends on, which files/interfaces to read.
 - **Outputs**: which files to create/modify, what the deliverable is.
 - **Acceptance criteria**: what "done" means, phrased as a command plus its expected result (runnable tests, observable behavior) — not "verify it works". A worker that has to invent the check will report a check it did not run.
-- **No interactive prompts**: say so in the spec. The worker must not use an interactive question tool (`AskUserQuestion`, plan mode) — nothing it renders in its own terminal ever reaches Orca, so the node just sits `dispatched` forever. If it truly needs a decision it must call `orca orchestration ask` (that lands in the Run's inbox and the viewer surfaces it), or take the pre-agreed branch and record the choice in its result.
+- **No interactive prompts**: say so in the spec. The worker must not use an interactive question tool (`AskUserQuestion`, plan mode) — nothing it renders in its own terminal ever reaches Orca, so the node just sits `dispatched` forever.
+- **Blockers go to `ask`, not to `failed`**: a `failed` node stops its whole branch and the worker's session is gone. Paste this outcome contract into every spec:
+  ```
+  Outcome rules:
+  - Report failed ONLY if the change itself is broken (does not build, or a test fails that passed before this change).
+  - If you are blocked by something outside the change (environment, credentials, data, a decision, or an acceptance check that cannot pass here), run
+      orca orchestration ask --question "<what blocks you, what is already done, evidence file paths>" --options "<option A>,<option B>"
+    then end your turn. Orca wakes you with the answer; continue from there.
+  - Otherwise report completed and list any open items in the result.
+  ```
+  `ask` keeps the worker alive and puts the question on the viewer's canvas with the options as one-click answers. Write acceptance against a baseline when the repo has pre-existing failures ("the set of failing packages matches the baseline"), never "all tests pass".
 - Use imperative sentences; avoid vague phrasing like "investigate" or "as appropriate".
 
 ## When human approval is needed

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DagView } from "./components/DagView";
 import { ExecControls } from "./components/ExecControls";
+import { FailedPanel } from "./components/FailedPanel";
 import { GatePanel } from "./components/GatePanel";
 import { MailPanel } from "./components/MailPanel";
 import { NodePanel } from "./components/NodePanel";
@@ -430,6 +431,7 @@ export default function App() {
 
             {/* questions / escalations the coordinator loop cannot answer */}
             <MailPanel mail={dag.mail} runId={runId} onAnswered={refresh} />
+            <FailedPanel nodes={dag.nodes} runId={runId} onSettled={refresh} />
 
             {/* keyed by node so switching selection replays the card's entrance */}
             {selected && (

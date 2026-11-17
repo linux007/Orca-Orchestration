@@ -129,6 +129,18 @@ export async function answerMail(
 }
 
 /**
+ * Recover a failed task: `ready` retries it, `completed` accepts the work as
+ * done and releases its dependents. The worker's report is kept either way.
+ */
+export async function setTaskStatus(
+  id: string,
+  status: "ready" | "completed",
+  runId: string,
+): Promise<void> {
+  await post(`/api/tasks/${encodeURIComponent(id)}/status`, { status, runId });
+}
+
+/**
  * Clear tasks. `orca orchestration reset` has no `--run` scope: it wipes every
  * Run's tasks in the local orchestration database, so the caller must opt in.
  */

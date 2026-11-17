@@ -75,6 +75,8 @@ export interface RunMail {
   dispatchId: string | null;
   /** Orca marks a row handled once someone receives it; the UI hides those. */
   handled: boolean;
+  /** `ask --options` choices — one-click answers on the card. */
+  options: string[];
 }
 
 export interface DagResponse {

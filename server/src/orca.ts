@@ -168,6 +168,21 @@ export interface Gate {
  * Throws an `OrcaCliError` carrying `error.code` when the runtime reports
  * `ok: false`, so callers can branch on `run_required` / `consumer_fenced`.
  */
+/**
+ * The CLI's environment, minus any agent-session identity inherited from the
+ * shell that launched us. Started from inside an Orca agent session (the skill
+ * tells agents to run `npx orca-dag`), the CLI would otherwise act AS that
+ * session and refuse every `--from <coordinator>` with `consumer_fenced`.
+ */
+const CLI_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([k]) =>
+      k !== "ORCA_AGENT_SESSION_ID" &&
+      k !== "ORCA_AGENT_SESSION_SPAWN_TOKEN" &&
+      k !== "ORCA_STRUCTURED_SESSION",
+  ),
+);
+
 export async function runOrca<T = unknown>(args: string[]): Promise<T> {
   const fullArgs = args.includes("--json") ? args : [...args, "--json"];
   let stdout: string;
@@ -175,6 +190,7 @@ export async function runOrca<T = unknown>(args: string[]): Promise<T> {
     const res = await pExecFile("orca", fullArgs, {
       maxBuffer: 32 * 1024 * 1024,
       timeout: 180_000,
+      env: CLI_ENV,
     });
     stdout = res.stdout;
   } catch (err: unknown) {
@@ -288,7 +304,45 @@ export async function listTasks(runId: string): Promise<OrcaTask[]> {
     "--run",
     runId,
   ]);
-  return result.tasks ?? [];
+  const tasks = result.tasks ?? [];
+  // The concise view drops dispatch_id/assignee_handle even while dispatched;
+  // take them from the in-flight worker. Only costs a call while something runs.
+  if (tasks.some((t) => t.status === "dispatched")) {
+    const live = await listInFlightWorkers(runId).catch(() => new Map<string, InFlightWorker>());
+    for (const t of tasks) {
+      const w = t.status === "dispatched" ? live.get(t.id) : undefined;
+      if (w) {
+        t.dispatch_id ??= w.dispatchId;
+        t.assignee_handle ??= w.terminal;
+      }
+    }
+  }
+  return tasks;
+}
+
+interface InFlightWorker {
+  dispatchId: string;
+  terminal: string | null;
+}
+
+/** taskId → its unsettled Dispatch. A retried task also lists its old, settled ones. */
+async function listInFlightWorkers(runId: string): Promise<Map<string, InFlightWorker>> {
+  const result = await runOrca<{ workers?: Record<string, unknown>[] }>([
+    "orchestration",
+    "worker-list",
+    "--run",
+    runId,
+  ]);
+  const map = new Map<string, InFlightWorker>();
+  for (const w of result.workers ?? []) {
+    if (w.state === "succeeded" || w.state === "failed") continue;
+    if (typeof w.taskId !== "string" || typeof w.dispatchId !== "string") continue;
+    map.set(w.taskId, {
+      dispatchId: w.dispatchId,
+      terminal: typeof w.terminal === "string" ? w.terminal : null,
+    });
+  }
+  return map;
 }
 
 /**
@@ -454,6 +508,8 @@ export interface RunMail {
   dispatchId: string | null;
   /** Orca marks a row handled once someone receives it; the UI hides those. */
   handled: boolean;
+  /** `ask --options` choices (question only) — rendered as one-click answers. */
+  options: string[];
 }
 
 function parsePayload(raw: unknown): Record<string, unknown> {
@@ -487,7 +543,8 @@ export async function listMail(runId: string): Promise<RunMail[]> {
   ]);
   return (result.messages ?? [])
     .map((m) => {
-      const dispatchId = parsePayload(m.payload).dispatchId;
+      const payload = parsePayload(m.payload);
+      const dispatchId = payload.dispatchId;
       return {
         id: String(m.id ?? ""),
         type: String(m.type ?? "status"),
@@ -496,6 +553,7 @@ export async function listMail(runId: string): Promise<RunMail[]> {
         fromHandle: m.from_handle ? String(m.from_handle) : null,
         dispatchId: typeof dispatchId === "string" ? dispatchId : null,
         handled: m.handled === true,
+        options: Array.isArray(payload.options) ? payload.options.map(String) : [],
       };
     })
     .filter((m) => m.id);
